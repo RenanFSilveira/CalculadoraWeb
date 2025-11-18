@@ -1,0 +1,12 @@
+Custo,Valor
+Funcionarios,1660.00
+Aluguel,1500.00
+Luz,750.00
+Agua,100.00
+Condominio,100.00
+Internet,100.00
+TrafegoPago, 2380
+Maquina de cartao (Aluguel Fixo),240.00
+Embalagens (Custo médio mensal),519
+TAXA_MAQUINA_CARTAO_PERCENTUAL_CREDITO,0.03
+TAXA_MAQUINA_CARTAO_PERCENTUAL_DEBITO,0.02
