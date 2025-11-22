@@ -1,8 +1,28 @@
+# --- Python & Ambiente Virtual ---
 __pycache__/
 *.pyc
-.streamlit/secrets.toml
-.env
 venv/
+.env
+
+# --- Segurança do Streamlit (ESSENCIAL) ---
+.streamlit/secrets.toml
+
+# --- Arquivos de Sistema (Mac/Windows) ---
 .DS_Store
+Thumbs.db
+
+# --- Arquivos Temporários ---
 *.tmp
+
+# --- DADOS SENSÍVEIS (Proteção Financeira) ---
+# Ignora uploads de testes
 test_vendas.csv
+
+# Ignora os dados financeiros reais da sua empresa
+Variaveis.csv
+Fixos.csv
+historico_financeiro.csv
+
+# Ignora planilhas baixadas ou geradas
+*.xlsx
+*.xls
