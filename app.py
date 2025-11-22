@@ -18,6 +18,53 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ==========================================
+# 🔒 SISTEMA DE LOGIN (ADICIONE ISSO AQUI)
+# ==========================================
+def check_password():
+    """Retorna `True` se o usuário tiver a senha correta."""
+
+    def password_entered():
+        """Verifica se a senha inserida bate com a do secrets."""
+        if st.session_state["password"] == st.secrets["passwords"]["acesso_gestor"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Não armazena a senha na sessão
+        else:
+            st.session_state["password_correct"] = False
+
+    # 1. Se já validou, retorna True
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # 2. Interface de Login
+    st.markdown("""
+    <style>
+        .stTextInput > label { display: none; }
+        .block-container { padding-top: 5rem; }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns([1,2,1])
+    with col2:
+        st.title("🔒 Acesso Restrito")
+        st.write("Sistema de Gestão Financeira - Pankeca's")
+        st.text_input(
+            "Digite a senha de acesso", 
+            type="password", 
+            on_change=password_entered, 
+            key="password",
+            placeholder="Senha do Administrador"
+        )
+        
+        if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+            st.error("❌ Senha incorreta. Tente novamente.")
+
+    return False
+
+# Se a senha não estiver correta, para a execução do script aqui.
+if not check_password():
+    st.stop()
+
 # --- CSS CUSTOMIZADO (PREMIUM) ---
 st.markdown("""
 <style>
@@ -252,7 +299,7 @@ if menu == "📊 Dashboard Mensal":
                 "Receita_Real": resumo['receita_bruta_real'],
                 "Lucro_Liquido": resumo['lucro_liquido_estimado'],
                 "Margem_Percentual": resumo['margem_liquida_percentual'],
-                "Custos_Fixos": resumo['custos_fixos_totais'],
+                "Custos_Fixos": resumo['custos_fixos_total'],
                 "Ticket_Medio": resumo.get('ticket_medio_real', 0)
             }
             df_novo = pd.DataFrame([novo_registro])
