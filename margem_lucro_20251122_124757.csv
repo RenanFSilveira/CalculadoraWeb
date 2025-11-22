@@ -1,0 +1,3 @@
+Categoria,Produto,Quantidade,Valor,Dinheiro,Débito,Crédito,Cashless,Custo_Insumo_Unitario,Custo_Total_Insumos,Taxa_Debito,Taxa_Credito,Taxa_Cashless,Taxa_Total_Produto,Receita_Liquida_Produto,Margem_Unitaria,Percentual_Margem_Produto
+Bebida,Coca-Cola,10,100.0,100,0,0,0,0.0,0.0,0.0,0.0,0.0,0.0,100.0,10.0,100.0
+Lanche,Hambúrguer,5,200.0,200,0,0,0,0.0,0.0,0.0,0.0,0.0,0.0,200.0,40.0,100.0

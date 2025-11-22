@@ -1,4 +1,3 @@
-
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -14,94 +13,118 @@ class CalculadoraMargemLucroComPedalada:
         self.arquivo_custos_fixos = arquivo_custos_fixos
 
     def processar_relatorio_mensal(self, arquivo_vendas, mes_referencia=None, 
-                                 valor_pedaladas=0, salvar_resultado=False):
+                                 valor_pedaladas=0, salvar_resultado=True):
         """
-        Processa um relatório mensal com tratamento de pedaladas para o App Web.
-        Versão: Blindada contra erros de chave (KeyError)
+        Processa um relatório mensal com tratamento de pedaladas
+
+        Args:
+            arquivo_vendas: Path para arquivo Excel/CSV de vendas
+            mes_referencia: String identificando o mês (ex: "2024-09")
+            valor_pedaladas: Valor total das pedaladas do mês (R$)
+            salvar_resultado: Boolean para salvar CSV com resultado
+
+        Returns:
+            tuple: (resumo_financeiro, detalhamento_produtos)
         """
 
+        print(f"📊 Processando relatório: {arquivo_vendas}")
+        
         # 1. Carregar dados
-        if arquivo_vendas.endswith('.xlsx'):
-            vendas_df = pd.read_excel(arquivo_vendas, sheet_name=0)
+        if arquivo_vendas.endswith('.xls'):
+            try:
+                vendas_df = pd.read_excel(arquivo_vendas, sheet_name=0, engine='xlrd')
+            except Exception as e:
+                print(f"⚠️ Erro ao ler .xls com xlrd: {e}. Tentando como HTML...")
+                try:
+                    # Tenta ler como HTML (comum em sistemas legados que exportam HTML com extensão .xls)
+                    # read_html retorna uma lista de dataframes
+                    dfs = pd.read_html(arquivo_vendas, decimal=',', thousands='.', header=0)
+                    if dfs:
+                        vendas_df = dfs[0] # Pega a primeira tabela
+                    else:
+                        raise ValueError("Nenhuma tabela encontrada no arquivo HTML/.xls")
+                except Exception as e_html:
+                     raise ValueError(f"Falha ao ler arquivo .xls (tanto como Excel quanto HTML): {e_html}")
+
+        elif arquivo_vendas.endswith('.xlsx'):
+            vendas_df = pd.read_excel(arquivo_vendas, sheet_name=0, engine='openpyxl')
         else:
             vendas_df = pd.read_csv(arquivo_vendas)
 
         custos_var_df = pd.read_csv(self.arquivo_custos_variaveis)
         custos_fix_df = pd.read_csv(self.arquivo_custos_fixos)
 
-        # 2. Limpar e validar dados
+        # 2. Limpar e validar dados de vendas (MOVIDO PARA ANTES DA DETECÇÃO)
         vendas_clean = self._limpar_dados_vendas(vendas_df)
+
+        # --- DETECÇÃO AUTOMÁTICA DE PEDALADA (Produção Cozinha Industrial) ---
+        # Identifica itens que devem ser tratados como pedalada e removidos da análise de produtos
+        mask_pedalada_auto = vendas_clean['Produto'].astype(str).str.contains("Produção Cozinha Industrial", case=False, na=False)
+        
+        # Calcular taxas sobre esses itens ANTES de remover
+        # Taxas: Débito 2%, Crédito/Outros 3%, Dinheiro 0%
+        df_pedalada = vendas_clean[mask_pedalada_auto].copy()
+        taxa_variavel_pedalada_auto = 0.0
+        
+        if not df_pedalada.empty:
+            taxa_debito = (df_pedalada['Débito'] * 0.02).sum()
+            taxa_credito = (df_pedalada['Crédito'] * 0.03).sum()
+            taxa_cashless = (df_pedalada['Cashless'] * 0.03).sum()
+            taxa_voucher = (df_pedalada['Voucher'] * 0.03).sum()
+            taxa_divisao = (df_pedalada['Divisão'] * 0.03).sum()
+            taxa_outros = (df_pedalada['Outros'] * 0.03).sum()
+            
+            taxa_variavel_pedalada_auto = taxa_debito + taxa_credito + taxa_cashless + taxa_voucher + taxa_divisao + taxa_outros
+            print(f"💳 Taxa variável sobre 'Produção Cozinha Industrial': R$ {taxa_variavel_pedalada_auto:.2f}")
+
+        valor_pedalada_auto = vendas_clean.loc[mask_pedalada_auto, 'Valor'].sum()
+        
+        # Remove esses itens do dataframe principal para não sujar a análise de produtos
+        if valor_pedalada_auto > 0:
+            print(f"⚠️  Detectado 'Produção Cozinha Industrial': R$ {valor_pedalada_auto:.2f} (Convertido para Pedalada)")
+            vendas_clean = vendas_clean[~mask_pedalada_auto].copy()
+            
+        # Soma ao valor informado manualmente pelo usuário
+        valor_pedaladas_total = valor_pedaladas + valor_pedalada_auto
+
+        if valor_pedaladas_total > 0:
+            print(f"⚠️  Pedaladas totais (Manual + Auto): R$ {valor_pedaladas_total:,.2f}")
+
+        # 3. Verificar produtos sem custo cadastrado
         self._verificar_produtos_sem_custo(vendas_clean, custos_var_df)
 
-        # 4. Merge com custos
+        # 4. Fazer merge com custos variáveis
         resultado = vendas_clean.merge(custos_var_df, on='Produto', how='left')
         resultado['Custo_Insumo_Unitario'] = resultado['Custo_Insumo_Unitario'].fillna(0)
 
-        # 5. Métricas
+        # 5. Calcular métricas por produto E taxas por forma de pagamento
         resultado = self._calcular_metricas_produto_e_taxas(resultado)
 
-        # 6. Resumo Financeiro
+        # 6. Calcular totais e resumo financeiro (COM tratamento de pedaladas)
         resumo = self._calcular_resumo_financeiro_com_pedaladas(
-            resultado, custos_fix_df, mes_referencia, valor_pedaladas
+            resultado, custos_fix_df, mes_referencia, valor_pedaladas_total, valor_pedalada_auto, taxa_variavel_pedalada_auto
+        )
+        
+        # Adiciona info da detecção automática ao resumo para exibir no front
+        resumo['valor_pedalada_auto'] = valor_pedalada_auto
+        
+        # 8. Novos KPIs (Break-even e Comparativos)
+        self._calcular_kpis_avancados(
+            resumo, 
+            resumo.get('custos_fixos_total', 0), 
+            resumo.get('margem_bruta', 0), 
+            resumo.get('receita_bruta_real', 0)
         )
 
-        # --- CORREÇÃO DE CHAVES (BLINDAGEM) ---
-        
-        # 1. Garante Custos Variáveis Totais
-        # Se a função original não calculou, calculamos aqui.
-        if 'custos_variaveis_totais' not in resumo:
-            if 'Custo_Total_Produto' in resultado.columns:
-                resumo['custos_variaveis_totais'] = resultado['Custo_Total_Produto'].sum()
-            else:
-                # FALLBACK: Se a coluna não existe, calcula: Quantidade * Custo Unitário
-                # Verifica se as colunas base existem para evitar outro erro
-                col_qtd = 'Quantidade' if 'Quantidade' in resultado.columns else None
-                col_custo = 'Custo_Insumo_Unitario' if 'Custo_Insumo_Unitario' in resultado.columns else None
-                
-                if col_qtd and col_custo:
-                    # Cria a coluna para uso futuro e soma
-                    resultado['Custo_Total_Produto'] = resultado[col_qtd] * resultado[col_custo]
-                    resumo['custos_variaveis_totais'] = resultado['Custo_Total_Produto'].sum()
-                else:
-                    resumo['custos_variaveis_totais'] = 0.0
-
-        # 2. Garante Custos Fixos Totais
-        if 'custos_fixos_totais' not in resumo:
-            resumo['custos_fixos_totais'] = custos_fix_df['Valor'].sum() if 'Valor' in custos_fix_df else 0
-
-        # 3. Garante Lucro Líquido
-        if 'lucro_liquido_estimado' not in resumo:
-            if 'lucro_liquido' in resumo:
-                resumo['lucro_liquido_estimado'] = resumo['lucro_liquido']
-            else:
-                receita = resumo.get('receita_bruta_real', 0)
-                custos = resumo.get('custos_variaveis_totais', 0) + resumo.get('custos_fixos_totais', 0)
-                resumo['lucro_liquido_estimado'] = receita - custos
-
-        # 4. Garante Margem %
-        if 'margem_liquida_percentual' not in resumo:
-            lucro = resumo.get('lucro_liquido_estimado', 0)
-            receita = resumo.get('receita_bruta_real', 1) 
-            if receita == 0: receita = 1 
-            resumo['margem_liquida_percentual'] = (lucro / receita) * 100
-            
-        # 5. Garante Taxa Pedalada
-        if 'taxa_pedalada' not in resumo:
-            resumo['taxa_pedalada'] = valor_pedaladas * 0.03
-
-        # 6. Garante Receita Bruta Real (caso falte)
-        if 'receita_bruta_real' not in resumo:
-             resumo['receita_bruta_real'] = resumo.get('receita_bruta_sistema', 0) - valor_pedaladas
-
-        # 7. Salvar resultado (Ignora erros de permissão)
+        # 7. Salvar resultado se solicitado
         if salvar_resultado:
-            try:
-                self._salvar_resultado(resultado, resumo, mes_referencia, valor_pedaladas)
-            except Exception:
-                pass
+            self._salvar_resultado(resultado, resumo, mes_referencia, valor_pedaladas_total)
+
+        # 8. Exibir relatório
+        self._exibir_relatorio(resumo, resultado, valor_pedaladas_total)
 
         return resumo, resultado
-    
+
     def _limpar_dados_vendas(self, vendas_df):
         """Limpa e valida dados do arquivo de vendas"""
 
@@ -134,11 +157,11 @@ class CalculadoraMargemLucroComPedalada:
         produtos_sem_custo = produtos_vendas - produtos_custos
 
         if produtos_sem_custo:
-            print(f"\n⚠️  ATENÇÃO: {len(produtos_sem_custo)} produto(s) sem custo cadastrado:")
+            print(f"\\n⚠️  ATENÇÃO: {len(produtos_sem_custo)} produto(s) sem custo cadastrado:")
             for produto in sorted(produtos_sem_custo):
                 qtd = vendas_clean[vendas_clean['Produto'] == produto]['Quantidade'].sum()
                 print(f"   - {produto} (Qtd vendida: {qtd})")
-            print("   💡 Estes produtos terão custo = 0 no cálculo\n")
+            print("   💡 Estes produtos terão custo = 0 no cálculo\\n")
 
     def _calcular_metricas_produto_e_taxas(self, resultado):
         """Calcula métricas financeiras por produto E taxas específicas por forma de pagamento"""
@@ -191,11 +214,12 @@ class CalculadoraMargemLucroComPedalada:
         
         return resultado
 
-    def _calcular_resumo_financeiro_com_pedaladas(self, resultado, custos_fix_df, mes_referencia, valor_pedaladas):
+    def _calcular_resumo_financeiro_com_pedaladas(self, resultado, custos_fix_df, mes_referencia, valor_pedaladas, valor_pedalada_auto=0, taxa_variavel_pedalada_auto=0):
         """Calcula o resumo financeiro completo COM tratamento de pedaladas"""
 
         # Totais básicos BRUTOS (antes de descontar pedaladas)
-        receita_bruta_sistema = resultado['Valor'].sum()
+        # A receita bruta do sistema deve incluir o que foi removido (auto pedalada)
+        receita_bruta_sistema = resultado['Valor'].sum() + valor_pedalada_auto
         custo_insumos_total = resultado['Custo_Total_Insumos'].sum()
 
         # Totais por forma de pagamento BRUTOS
@@ -223,15 +247,30 @@ class CalculadoraMargemLucroComPedalada:
         taxa_total_outros = resultado['Taxa_Outros'].sum()
 
         # Taxa total (incluindo a taxa da pedalada)
+        # ADICIONADO: taxa_variavel_pedalada_auto (calculada antes da remoção)
         taxa_total_geral = (taxa_total_debito + taxa_total_credito_bruto + 
                           taxa_total_cashless + taxa_total_voucher + 
-                          taxa_total_divisao + taxa_total_outros)
+                          taxa_total_divisao + taxa_total_outros + 
+                          taxa_variavel_pedalada_auto)
 
         # Processar custos fixos
         custos_fixos_dict = dict(zip(custos_fix_df['Custo'], custos_fix_df['Valor']))
         custos_fixos_absolutos = {k: v for k, v in custos_fixos_dict.items() 
                                 if not k.startswith('TAXA_MAQUINA_CARTAO_PERCENTUAL')}
         custos_fixos_total = sum(custos_fixos_absolutos.values())
+        
+        # --- CORREÇÃO DE CHAVES (BLINDAGEM) ---
+        # Garante Custos Variáveis Totais
+        if 'Custo_Total_Produto' in resultado.columns:
+            custos_variaveis_totais = resultado['Custo_Total_Produto'].sum()
+        else:
+             # FALLBACK: Se a coluna não existe, calcula: Quantidade * Custo Unitário
+            col_qtd = 'Quantidade' if 'Quantidade' in resultado.columns else None
+            col_custo = 'Custo_Insumo_Unitario' if 'Custo_Insumo_Unitario' in resultado.columns else None
+            if col_qtd and col_custo:
+                 custos_variaveis_totais = (resultado[col_qtd] * resultado[col_custo]).sum()
+            else:
+                 custos_variaveis_totais = 0.0
 
         # Cálculos finais com receita REAL (descontada a pedalada)
         margem_bruta = receita_bruta_real - custo_insumos_total
@@ -253,8 +292,10 @@ class CalculadoraMargemLucroComPedalada:
             # Pedaladas
             'valor_pedaladas': valor_pedaladas,
             'taxa_pedalada': taxa_pedalada,
+            'taxa_variavel_pedalada_auto': taxa_variavel_pedalada_auto,
 
             'custo_insumos_total': custo_insumos_total,
+            'custos_variaveis_totais': custos_variaveis_totais, # Adicionado para compatibilidade
             'margem_bruta': margem_bruta,
             'percentual_margem_bruta': (margem_bruta / receita_bruta_real) * 100 if receita_bruta_real > 0 else 0,
             'custos_fixos_total': custos_fixos_total,
@@ -278,7 +319,9 @@ class CalculadoraMargemLucroComPedalada:
             'taxa_total_geral': taxa_total_geral,
 
             'lucro_liquido': lucro_liquido,
+            'lucro_liquido_estimado': lucro_liquido, # Alias para compatibilidade
             'percentual_margem_liquida': percentual_margem_liquida,
+            'margem_liquida_percentual': percentual_margem_liquida, # Alias para compatibilidade
             'custos_fixos_detalhados': custos_fixos_absolutos,
             'produtos_processados': len(resultado),
             'ticket_medio_real': receita_bruta_real / resultado['Quantidade'].sum() if resultado['Quantidade'].sum() > 0 else 0
@@ -304,7 +347,7 @@ class CalculadoraMargemLucroComPedalada:
     def _exibir_relatorio(self, resumo, resultado, valor_pedaladas):
         """Exibe o relatório completo no console"""
 
-        print("\n" + "="*90)
+        print("\\n" + "="*90)
         print("📈 RELATÓRIO DE MARGEM DE LUCRO - COM TRATAMENTO DE PEDALADAS")
         print("="*90)
 
@@ -313,14 +356,16 @@ class CalculadoraMargemLucroComPedalada:
         print(f"🍽️  Produtos analisados: {resumo['produtos_processados']}")
 
         if valor_pedaladas > 0:
-            print("\n💳 AJUSTES POR PEDALADAS:")
+            print("\\n💳 AJUSTES POR PEDALADAS:")
             print(f"   Receita bruta (sistema): R$ {resumo['receita_bruta_sistema']:>12,.2f}")
             print(f"   Pedaladas (desconto):    R$ {resumo['valor_pedaladas']:>12,.2f}")
             print(f"   Taxa da pedalada (3%):   R$ {resumo['taxa_pedalada']:>12,.2f}")
+            if resumo.get('taxa_variavel_pedalada_auto', 0) > 0:
+                print(f"   Taxa var. (Cozinha):     R$ {resumo['taxa_variavel_pedalada_auto']:>12,.2f}")
             print("-" * 90)
             print(f"   Receita bruta REAL:      R$ {resumo['receita_bruta_real']:>12,.2f}")
 
-        print("\n💰 RESUMO FINANCEIRO:")
+        print("\\n💰 RESUMO FINANCEIRO:")
         print(f"   Receita bruta real:  R$ {resumo['receita_bruta_real']:>12,.2f}")
         print(f"   Custo de insumos:    R$ {resumo['custo_insumos_total']:>12,.2f}")
         print(f"   Margem bruta:        R$ {resumo['margem_bruta']:>12,.2f} ({resumo['percentual_margem_bruta']:>5.1f}%)")
@@ -329,7 +374,7 @@ class CalculadoraMargemLucroComPedalada:
         print("-" * 90)
         print(f"   💎 LUCRO LÍQUIDO:     R$ {resumo['lucro_liquido']:>12,.2f} ({resumo['percentual_margem_liquida']:>5.1f}%)")
 
-        print("\n💳 DETALHAMENTO POR FORMA DE PAGAMENTO:")
+        print("\\n💳 DETALHAMENTO POR FORMA DE PAGAMENTO:")
         print(f"   Dinheiro (0% taxa):  R$ {resumo['total_dinheiro']:>10,.2f} | Taxa: R$ {0:>8,.2f}")
         print(f"   Débito (2% taxa):    R$ {resumo['total_debito']:>10,.2f} | Taxa: R$ {resumo['taxa_total_debito']:>8,.2f}")
 
@@ -349,7 +394,7 @@ class CalculadoraMargemLucroComPedalada:
         if resumo['total_outros'] > 0:
             print(f"   Outros (3% taxa):    R$ {resumo['total_outros']:>10,.2f} | Taxa: R$ {resumo['taxa_total_outros']:>8,.2f}")
 
-        print(f"\n🎯 INDICADORES:")
+        print(f"\\n🎯 INDICADORES:")
         print(f"   Ticket médio real: R$ {resumo['ticket_medio_real']:.2f}")
         print(f"   % vendas em dinheiro: {(resumo['total_dinheiro']/resumo['receita_bruta_real']*100):.1f}%")
         print(f"   % vendas em cartão: {((resumo['receita_bruta_real']-resumo['total_dinheiro'])/resumo['receita_bruta_real']*100):.1f}%")
@@ -359,7 +404,7 @@ class CalculadoraMargemLucroComPedalada:
             print(f"   Custo real das pedaladas: R$ {resumo['taxa_pedalada']:.2f}")
 
         # Top produtos por receita líquida
-        print("\n🏆 TOP 5 PRODUTOS POR RECEITA LÍQUIDA:")
+        print("\\n🏆 TOP 5 PRODUTOS POR RECEITA LÍQUIDA:")
         top_receita = resultado.nlargest(5, 'Receita_Liquida_Produto')[['Produto', 'Quantidade', 'Valor', 'Receita_Liquida_Produto', 'Margem_Unitaria']]
         for _, row in top_receita.iterrows():
             print(f"   {row['Produto'][:35]:<35} - Qtd: {row['Quantidade']:>3} - R$ {row['Valor']:>7.2f} | Líquida: R$ {row['Receita_Liquida_Produto']:>7.2f} (Margem: R$ {row['Margem_Unitaria']:>5.2f})")
@@ -367,20 +412,47 @@ class CalculadoraMargemLucroComPedalada:
         # Produtos problemáticos
         produtos_problema = resultado[resultado['Margem_Unitaria'] <= 0]
         if len(produtos_problema) > 0:
-            print(f"\n⚠️  PRODUTOS COM MARGEM NEGATIVA ({len(produtos_problema)}):")
+            print(f"\\n⚠️  PRODUTOS COM MARGEM NEGATIVA ({len(produtos_problema)}):")
             for _, row in produtos_problema.iterrows():
                 print(f"   ❌ {row['Produto'][:35]:<35} - Margem: R$ {row['Margem_Unitaria']:>6.2f}")
 
-        print("\n" + "="*90)
+        print("\\n" + "="*90)
 
-# Exemplo de uso
-if __name__ == "__main__":
-    # Criar instância da calculadora com pedaladas
-    calc = CalculadoraMargemLucroComPedalada()
+    def _calcular_kpis_avancados(self, resumo, custos_fixos_total, margem_bruta, receita_bruta_real):
+        """Calcula KPIs estratégicos para o gestor"""
+        
+        # 1. Break-even Point (Ponto de Equilíbrio)
+        # Fórmula: Custos Fixos / Margem de Contribuição (%)
+        margem_contrib_percentual = (margem_bruta / receita_bruta_real) if receita_bruta_real > 0 else 0
+        
+        if margem_contrib_percentual > 0:
+            break_even = custos_fixos_total / margem_contrib_percentual
+        else:
+            break_even = 0
+            
+        resumo['kpi_break_even'] = break_even
+        resumo['kpi_margem_contrib_percentual'] = margem_contrib_percentual * 100
 
-    # Processar relatório (exemplo: se houve R$ 54.310,00 de pedaladas no período)
-    resumo, detalhamento = calc.processar_relatorio_mensal(
-        "3Meses.xlsx", 
-        "2024-Q3",
-        valor_pedaladas=54310.00  # Valor das pedaladas do período
-    )
+        # 2. CMV (Custo da Mercadoria Vendida) %
+        resumo['kpi_cmv_percentual'] = (resumo['custo_insumos_total'] / receita_bruta_real * 100) if receita_bruta_real > 0 else 0
+
+    def comparar_mes_anterior(self, resumo_atual, resumo_anterior):
+        """Gera dicionário com variações percentuais em relação ao mês anterior"""
+        if not resumo_anterior:
+            return None
+            
+        comparativo = {}
+        metricas = ['receita_bruta_real', 'lucro_liquido', 'ticket_medio_real', 'custos_fixos_total']
+        
+        for metrica in metricas:
+            valor_atual = resumo_atual.get(metrica, 0)
+            valor_anterior = resumo_anterior.get(metrica, 0)
+            
+            if valor_anterior > 0:
+                delta = ((valor_atual - valor_anterior) / valor_anterior) * 100
+            else:
+                delta = 0 if valor_atual == 0 else 100 # Se anterior era 0 e atual > 0, consideramos 100% de aumento simbólico
+                
+            comparativo[f'delta_{metrica}'] = delta
+            
+        return comparativo
