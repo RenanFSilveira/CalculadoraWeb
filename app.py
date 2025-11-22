@@ -26,6 +26,16 @@ def check_password():
 
     def password_entered():
         """Verifica se a senha inserida bate com a do secrets."""
+        # --- BLINDAGEM CONTRA ERRO DE CONFIGURAÇÃO ---
+        if "passwords" not in st.secrets:
+            st.error("ERRO CRÍTICO: A seção [passwords] não foi encontrada no Secrets. Verifique a configuração no Streamlit Cloud.")
+            return
+        
+        if "acesso_gestor" not in st.secrets["passwords"]:
+            st.error("ERRO CRÍTICO: A chave 'acesso_gestor' não foi encontrada dentro de [passwords].")
+            return
+        # ---------------------------------------------
+
         if st.session_state["password"] == st.secrets["passwords"]["acesso_gestor"]:
             st.session_state["password_correct"] = True
             del st.session_state["password"]  # Não armazena a senha na sessão
@@ -46,8 +56,11 @@ def check_password():
     
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
-        st.title("🔒 Acesso Restrito")
-        st.write("Sistema de Gestão Financeira - Pankeca's")
+        st.title("🔒 Acesso Restrito - Pankeca's")
+        
+        # --- DEBUG TEMPORÁRIO (Se quiser ver o que o sistema está lendo, descomente a linha abaixo) ---
+        # st.write("Chaves encontradas nos Secrets:", st.secrets.keys()) 
+        
         st.text_input(
             "Digite a senha de acesso", 
             type="password", 
